@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "pipes"
+version = "0.1.0"
+description = "Simple real time data stream manipulation."
+authors = ["Zech Zimmerman <hi@zech.codes>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.7"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
