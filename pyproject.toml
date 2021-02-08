@@ -10,7 +10,7 @@ repository = "https://github.com/ZechCodes/pipes"
 documentation = "https://github.com/ZechCodes/pipes/blob/main/readme.md"
 keywords = ["data", "stream", "realtime", "framework", "events"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "DEVELOPMENT STATUS :: 5 - PRODUCTION/STABLE",
     "License :: OSI Approved :: MIT License",
     "TOPIC :: SOFTWARE DEVELOPMENT :: LIBRARIES :: APPLICATION FRAMEWORKS",
     "INTENDED AUDIENCE :: DEVELOPERS",
