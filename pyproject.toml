@@ -1,22 +1,22 @@
 [tool.poetry]
-name = "pipes"
+name = "gully"
 version = "0.1.0"
 description = "Simple real time data stream manipulation."
 authors = ["Zech Zimmerman <hi@zech.codes>"]
 license = "MIT"
 readme = "readme.md"
-homepage = "https://github.com/ZechCodes/Bevy"
-repository = "https://github.com/ZechCodes/pipes"
-documentation = "https://github.com/ZechCodes/pipes/blob/main/readme.md"
+homepage = "https://github.com/ZechCodes/gully"
+repository = "https://github.com/ZechCodes/gully"
+documentation = "https://github.com/ZechCodes/gully/blob/main/readme.md"
 keywords = ["data", "stream", "realtime", "framework", "events"]
 classifiers = [
-    "DEVELOPMENT STATUS :: 5 - PRODUCTION/STABLE",
+    "Development Status :: 5 - Production/Stable",
     "License :: OSI Approved :: MIT License",
-    "TOPIC :: SOFTWARE DEVELOPMENT :: LIBRARIES :: APPLICATION FRAMEWORKS",
-    "INTENDED AUDIENCE :: DEVELOPERS",
-    "PROGRAMMING LANGUAGE :: PYTHON :: 3.7",
-    "PROGRAMMING LANGUAGE :: PYTHON :: 3.8",
-    "PROGRAMMING LANGUAGE :: PYTHON :: 3.9"
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9"
 ]
 
 

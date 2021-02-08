@@ -1,28 +1,28 @@
 import asyncio
-import pipes
+import gully
 
 
-def test_pipe_filter_view():
+def test_stream_filter_view():
     got_value = []
 
-    async def watch(pipe):
-        async for value in pipe:
+    async def watch(stream):
+        async for value in stream:
             got_value.append(value)
 
-    async def push(pipe):
+    async def push(stream):
         for i in range(5):
-            pipe.push(i)
+            stream.push(i)
             await asyncio.sleep(0.1)
 
     async def run():
         def f(p, value):
             return value % 2 == 0
 
-        pipe = pipes.Pipe()
-        view = pipe.filter(f)
+        stream = gully.DataStream()
+        view = stream.filter(f)
         loop.create_task(watch(view))
         await asyncio.sleep(0.1)
-        await push(pipe)
+        await push(stream)
         view.close()
 
     loop = asyncio.new_event_loop()
@@ -31,27 +31,27 @@ def test_pipe_filter_view():
     assert got_value == [0, 2, 4]
 
 
-def test_pipe_map_view():
+def test_stream_map_view():
     got_value = []
 
-    async def watch(pipe):
-        async for value in pipe:
+    async def watch(stream):
+        async for value in stream:
             got_value.append(value)
 
-    async def push(pipe):
+    async def push(stream):
         for i in range(5):
-            pipe.push(i)
+            stream.push(i)
             await asyncio.sleep(0.1)
 
     async def run():
         def m(p, value):
             return value * 2
 
-        pipe = pipes.Pipe()
-        view = pipe.map(m)
+        stream = gully.DataStream()
+        view = stream.map(m)
         loop.create_task(watch(view))
         await asyncio.sleep(0.1)
-        await push(pipe)
+        await push(stream)
         view.close()
 
     loop = asyncio.new_event_loop()
@@ -60,16 +60,16 @@ def test_pipe_map_view():
     assert got_value == [0, 2, 4, 6, 8]
 
 
-def test_pipe_map_filter_view():
+def test_stream_map_filter_view():
     got_value = []
 
-    async def watch(pipe):
-        async for value in pipe:
+    async def watch(stream):
+        async for value in stream:
             got_value.append(value)
 
-    async def push(pipe):
+    async def push(stream):
         for i in range(5):
-            pipe.push(i)
+            stream.push(i)
             await asyncio.sleep(0.1)
 
     async def run():
@@ -79,11 +79,11 @@ def test_pipe_map_filter_view():
         def m(p, value):
             return value * 2
 
-        pipe = pipes.Pipe()
-        view = pipe.filter(f).map(m)
+        stream = gully.DataStream()
+        view = stream.filter(f).map(m)
         loop.create_task(watch(view))
         await asyncio.sleep(0.1)
-        await push(pipe)
+        await push(stream)
         view.close()
 
     loop = asyncio.new_event_loop()

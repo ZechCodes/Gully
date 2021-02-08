@@ -3,7 +3,7 @@ from typing import Any, Callable
 import asyncio
 
 
-class PipeBase:
+class DataStreamBase:
     def __init__(self, *, max_size: int = -1, loop: asyncio.BaseEventLoop = None):
         self._loop = loop if loop else asyncio.get_event_loop()
         self._max_size = max_size
@@ -11,7 +11,7 @@ class PipeBase:
         self._values = []
 
     def __aiter__(self):
-        return PipeIterator(self)
+        return DataStreamIterator(self)
 
     def __contains__(self, item):
         return item in self._values
@@ -20,7 +20,7 @@ class PipeBase:
         return self._values[index]
 
     def __iter__(self):
-        return PipeIterator(self)
+        return DataStreamIterator(self)
 
     def __anext__(self):
         return self.next
@@ -40,17 +40,17 @@ class PipeBase:
         self.next.cancel()
 
     def filter(
-        self, predicate: Callable[[PipeBase, Any], bool], *, max_size: int = -1
-    ) -> PipeFilteredView:
-        return PipeFilteredView(self, predicate, max_size=max_size)
+        self, predicate: Callable[[DataStreamBase, Any], bool], *, max_size: int = -1
+    ) -> DataStreamFilteredView:
+        return DataStreamFilteredView(self, predicate, max_size=max_size)
 
     def map(
-        self, mapper: Callable[[PipeBase, Any], Any], *, max_size: int = -1
-    ) -> PipeMappedView:
-        return PipeMappedView(self, mapper, max_size=max_size)
+        self, mapper: Callable[[DataStreamBase, Any], Any], *, max_size: int = -1
+    ) -> DataStreamMappedView:
+        return DataStreamMappedView(self, mapper, max_size=max_size)
 
-    def iterate_first(self, limit: int) -> PipeIterator:
-        return PipeIterator(self, limit=limit)
+    def iterate_first(self, limit: int) -> DataStreamIterator:
+        return DataStreamIterator(self, limit=limit)
 
     def on_next(self, callback: Callable[[Any], None]):
         def caller(future):
@@ -70,21 +70,21 @@ class PipeBase:
         previous.set_result(value)
 
 
-class Pipe(PipeBase):
+class DataStream(DataStreamBase):
     def push(self, value: Any):
         self._set_value(value)
 
 
-class PipeView(PipeBase):
-    def __init__(self, pipe: PipeBase, **kwargs):
+class DataStreamView(DataStreamBase):
+    def __init__(self, stream: DataStreamBase, **kwargs):
         super().__init__(**kwargs)
-        self._pipe = pipe
+        self._stream = stream
 
         self._watch()
 
     @property
-    def pipe(self) -> PipeBase:
-        return self._pipe
+    def stream(self) -> DataStreamBase:
+        return self._stream
 
     def _receive_value(self, future: asyncio.Future):
         self._set_value(future.result())
@@ -94,16 +94,19 @@ class PipeView(PipeBase):
             self._watch()
             self._receive_value(future)
 
-        self._pipe.next.add_done_callback(receive)
+        self._stream.next.add_done_callback(receive)
 
 
-class PipeFilteredView(PipeView):
+class DataStreamFilteredView(DataStreamView):
     def __init__(
-        self, pipe: PipeBase, predicate: Callable[[PipeBase, Any], bool], **kwargs
+        self,
+        stream: DataStreamBase,
+        predicate: Callable[[DataStreamBase, Any], bool],
+        **kwargs
     ):
         self._predicate = predicate
 
-        super().__init__(pipe, **kwargs)
+        super().__init__(stream, **kwargs)
 
     def _receive_value(self, future: asyncio.Future):
         result = future.result()
@@ -111,13 +114,16 @@ class PipeFilteredView(PipeView):
             self._set_value(result)
 
 
-class PipeMappedView(PipeView):
+class DataStreamMappedView(DataStreamView):
     def __init__(
-        self, pipe: PipeBase, mapper: Callable[[PipeBase, Any], Any], **kwargs
+        self,
+        stream: DataStreamBase,
+        mapper: Callable[[DataStreamBase, Any], Any],
+        **kwargs
     ):
         self._mapper = mapper
 
-        super().__init__(pipe, **kwargs)
+        super().__init__(stream, **kwargs)
 
     def _receive_value(self, future: asyncio.Future):
         result = future.result()
@@ -125,11 +131,11 @@ class PipeMappedView(PipeView):
         self._set_value(mapped)
 
 
-class PipeIterator:
-    def __init__(self, pipe: PipeBase, *, limit=-1):
+class DataStreamIterator:
+    def __init__(self, stream: DataStreamBase, *, limit=-1):
         self._current_index = 0
         self._limit = limit
-        self._pipe = pipe
+        self._stream = stream
 
     def __aiter__(self):
         return self
@@ -138,8 +144,8 @@ class PipeIterator:
         if self._limit <= 0 or self._current_index < self._limit:
 
             async def getter():
-                if self._current_index >= len(self._pipe):
-                    await self._pipe.next
+                if self._current_index >= len(self._stream):
+                    await self._stream.next
                 return self.get_next_value()
 
             return getter()
@@ -151,7 +157,7 @@ class PipeIterator:
 
     def __next__(self):
         if (
-            self._current_index >= len(self._pipe)
+            self._current_index >= len(self._stream)
             or 0 < self._limit <= self._current_index
         ):
             raise StopIteration()
@@ -159,6 +165,6 @@ class PipeIterator:
         return self.get_next_value()
 
     def get_next_value(self) -> Any:
-        value = self._pipe[self._current_index]
+        value = self._stream[self._current_index]
         self._current_index += 1
         return value
