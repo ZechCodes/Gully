@@ -13,8 +13,8 @@ def test_stream_on_next():
         stream.push(5)
 
     async def run():
-        stream = gully.DataStream()
-        stream.on_next(watch)
+        stream = gully.Gully()
+        stream.watch(watch)
         await asyncio.sleep(0.1)
         await push(stream)
 
@@ -24,135 +24,95 @@ def test_stream_on_next():
     assert got_value == 5
 
 
-def test_stream_next():
-    got_value = None
+def test_stream_async_for():
+    got_value = []
 
     async def watch(stream):
-        nonlocal got_value
-        got_value = await stream.next
+        async for value in stream:
+            got_value.append(value)
+            if len(got_value) == 5:
+                break
 
     async def push(stream):
-        stream.push(5)
+        for i in range(5):
+            await asyncio.sleep(0.1)
+            stream.push(5)
 
     async def run():
-        stream = gully.DataStream()
-        loop.create_task(watch(stream))
-        await asyncio.sleep(0.1)
-        await push(stream)
+        stream = gully.Gully()
+        await asyncio.gather(push(stream), watch(stream))
 
     loop = asyncio.new_event_loop()
     loop.run_until_complete(run())
 
-    assert got_value == 5
+    assert got_value == [5, 5, 5, 5, 5]
 
 
-def test_stream_iterate():
+def test_stream_limit():
     got_value = []
 
     async def watch(stream):
-        for value in stream:
+        async for value in stream.limit(5):
             got_value.append(value)
 
     async def push(stream):
-        stream.push(1)
-        stream.push(2)
-        stream.push(3)
-        stream.push(4)
-        await asyncio.sleep(0.1)
-        stream.push(5)
-        stream.close()
+        for i in range(6):
+            await asyncio.sleep(0.1)
+            stream.push(5)
 
     async def run():
-        stream = gully.DataStream()
+        stream = gully.Gully()
         await asyncio.gather(push(stream), watch(stream))
 
     loop = asyncio.new_event_loop()
     loop.run_until_complete(run())
 
-    assert got_value == [1, 2, 3, 4]
+    assert got_value == [5, 5, 5, 5, 5]
 
 
-def test_stream_async_iterate():
+def test_stream_filter():
     got_value = []
 
     async def watch(stream):
-        try:
-            async for value in stream:
-                got_value.append(value)
-        except asyncio.exceptions.CancelledError:
-            ...
-
-    async def push(stream):
-        stream.push(1)
-        stream.push(2)
-        stream.push(3)
-        stream.push(4)
-        await asyncio.sleep(0.1)
-        stream.push(5)
-        stream.close()
-
-    async def run():
-        stream = gully.DataStream()
-        await asyncio.gather(push(stream), watch(stream))
-        return stream
-
-    loop = asyncio.new_event_loop()
-    p = loop.run_until_complete(run())
-
-    assert got_value == [1, 2, 3, 4, 5]
-
-
-def test_stream_iterate_limit():
-    got_value = []
-
-    async def watch(stream):
-        for value in stream.iterate_first(3):
+        async for value in stream.filter(lambda v: v % 2 == 0):
             got_value.append(value)
 
     async def push(stream):
-        stream.push(1)
-        stream.push(2)
-        stream.push(3)
-        stream.push(4)
-        await asyncio.sleep(0.1)
-        stream.push(5)
-        stream.close()
+        for i in range(6):
+            await asyncio.sleep(0.1)
+            stream.push(i)
+
+        stream.stop()
 
     async def run():
-        stream = gully.DataStream()
+        stream = gully.Gully()
         await asyncio.gather(push(stream), watch(stream))
 
     loop = asyncio.new_event_loop()
     loop.run_until_complete(run())
 
-    assert got_value == [1, 2, 3]
+    assert got_value == [0, 2, 4]
 
 
-def test_stream_async_iterate_limit():
+def test_stream_map():
     got_value = []
 
     async def watch(stream):
-        try:
-            async for value in stream.iterate_first(3):
-                got_value.append(value)
-        except asyncio.exceptions.CancelledError:
-            ...
+        async for value in stream.map(lambda v: v * 5):
+            got_value.append(value)
 
     async def push(stream):
-        stream.push(1)
-        stream.push(2)
-        stream.push(3)
-        stream.push(4)
-        await asyncio.sleep(0.1)
-        stream.push(5)
-        stream.close()
+        for i in range(1000):
+            await asyncio.sleep(0.001)
+            stream.push(1)
+
+        stream.stop()
 
     async def run():
-        stream = gully.DataStream()
+        stream = gully.Gully()
         await asyncio.gather(push(stream), watch(stream))
-        return stream
 
     loop = asyncio.new_event_loop()
-    p = loop.run_until_complete(run())
+    loop.run_until_complete(run())
 
-    assert got_value == [1, 2, 3]
+    assert got_value == [5] * 1000
