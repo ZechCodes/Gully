@@ -17,6 +17,7 @@ def test_stream_on_next():
         stream.watch(watch)
         await asyncio.sleep(0.1)
         await push(stream)
+        stream.stop()
 
     loop = asyncio.new_event_loop()
     loop.run_until_complete(run())
@@ -81,12 +82,13 @@ def test_stream_filter():
         for i in range(6):
             await asyncio.sleep(0.1)
             stream.push(i)
+        await asyncio.sleep(0.1)
 
         stream.stop()
 
     async def run():
         stream = gully.Gully()
-        await asyncio.gather(push(stream), watch(stream))
+        await asyncio.gather(watch(stream), push(stream))
 
     loop = asyncio.new_event_loop()
     loop.run_until_complete(run())

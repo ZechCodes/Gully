@@ -9,9 +9,10 @@ a single argument mapping function to the `map` method which will return a `Mapp
 limit the number of items a gully will return by either setting the `limit` arg at instantiation or by calling the
 `limit` method with the upper limit, it'll return a `Gully` object."""
 from __future__ import annotations
+
+import asyncio
 from asyncio import Future
-from inspect import isawaitable
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import Any, Awaitable, Callable, Union
 
 
 Callback = Union[Awaitable, Callable]
@@ -27,12 +28,10 @@ class Gully:
     All gully instances act as async iterators. So they can be used in an async for to observe future values that get
     pushed into the gully. When the gully stops it will end the iterator stopping the async for."""
 
-    def __init__(self, stream: Optional[Gully] = None, limit: int = -1):
+    def __init__(self, limit: int = -1):
         self._next = Future()
         self._limit = limit
-
-        if stream:
-            self._observe_stream(stream)
+        self._observers = set()
 
     @property
     def done(self) -> bool:
@@ -47,15 +46,21 @@ class Gully:
 
     def filter(self, predicate: Callable, limit: int = -1) -> FilteredGully:
         """Creates a filtered gully for all values passed into the gully."""
-        return FilteredGully(predicate, self, limit)
+        f = FilteredGully(predicate, limit)
+        self._watch(f)
+        return f
 
     def limit(self, limit: int) -> Gully:
         """Creates a gully that is limited to `limit` values."""
-        return Gully(self, limit)
+        l = Gully(limit)
+        self._watch(l)
+        return l
 
     def map(self, mapping: Callable, limit: int = -1):
         """Creates a mapped gully that maps all values passed into the gully."""
-        return MappedGully(mapping, self, limit)
+        m = MappedGully(mapping, limit)
+        self._watch(m)
+        return m
 
     def push(self, value: Any):
         """Pushes a value into the gully. If the gully is done/stopped nothing will happen."""
@@ -66,36 +71,38 @@ class Gully:
             self._limit -= 1
 
         old, self._next = self._next, Future()
-        if self._limit == 0:
-            self._next.cancel()
-
         old.set_result(value)
+        self._push(value)
+
+        if self._limit == 0:
+            self.stop()
 
     def stop(self):
         """Stops the gully by cancelling the next value's future."""
         self._next.cancel()
+        for observer in self._observers:
+            observer.stop()
 
     def watch(self, callback: Callback) -> Observer:
         """Adds a callback (either a callable or coroutine) that will be run everytime a value is pushed into the gully."""
-        return Observer(callback, self)
+        observer = Observer(callback)
+        self._watch(observer)
+        return observer
 
-    def _observe_stream(self, stream: Gully):
-        def observer(future: Future):
-            if future.cancelled():
-                self._next.cancel()
+    def _watch(self, observer: Union[Observer, Gully]):
+        self._observers.add(observer)
+
+    def _push(self, value: Any):
+        for observer in self._observers.copy():
+            if observer.done:
+                self._observers.remove(observer)
             else:
-                self.push(future.result())
-                self._observe_stream(stream)
-
-        stream.next.add_done_callback(observer)
+                observer.push(value)
 
     def __aiter__(self):
-        return self
-
-    def __anext__(self):
-        if self.done:
-            raise StopAsyncIteration()
-        return IterationFuture(self._next)
+        observer = ObserverIterator()
+        self._observers.add(observer)
+        return observer
 
 
 class FilteredGully(Gully):
@@ -106,10 +113,9 @@ class FilteredGully(Gully):
     def __init__(
         self,
         predicate: Callable[[Any], bool],
-        stream: Optional[Gully] = None,
         limit: int = 0,
     ):
-        super().__init__(stream, limit)
+        super().__init__(limit)
         self._predicate = predicate
 
     def push(self, value: Any):
@@ -126,10 +132,9 @@ class MappedGully(Gully):
     def __init__(
         self,
         mapping: Callable[[Any], Any],
-        stream: Optional[Gully] = None,
         limit: int = 0,
     ):
-        super().__init__(stream, limit)
+        super().__init__(limit)
         self._mapping = mapping
 
     def push(self, value: Any):
@@ -157,40 +162,48 @@ class FutureView:
             return getattr(self.__future, item)
 
 
-class IterationFuture(Future):
-    """A proxy future that converts a cancellation into a `StopAsyncIteration` exception to stop async for loops waiting
-    on the future."""
-
-    def __init__(self, future: Future, **kwargs):
-        super().__init__(**kwargs)
-        future.add_done_callback(self._future_done)
-
-    def _future_done(self, future: Future):
-        if future.cancelled():
-            self.set_exception(StopAsyncIteration())
-        else:
-            self.set_result(future.result())
-
-
 class Observer:
     """A simple observer that calls a callback each time a new value gets added to a gully. The callback can be either a
     function or a coroutine."""
 
-    def __init__(self, callback: Callback, stream: Gully):
-        self._callback = callback
-        self._stream = stream
+    def __init__(self, callback: Callback, *, loop=None):
+        self._queue = [asyncio.Future()]
+        self.callback = callback
+        (loop if loop else asyncio.get_event_loop()).create_task(self._watch())
 
-        self._setup()
+    @property
+    def done(self) -> bool:
+        return self._queue[-1].done()
 
     def stop(self):
-        """Stops the observer from watching for new values."""
-        self._stream.next.remove_done_callback(self._run)
+        self._queue[-1].cancel()
 
-    def _run(self, future: Future):
-        self._setup()
-        result = self._callback(future.result())
-        if isawaitable(result):
-            future.get_loop().create_task(result)
+    def push(self, value):
+        self._queue.append(asyncio.Future())
+        self._queue[-2].set_result(value)
 
-    def _setup(self):
-        self._stream.next.add_done_callback(self._run)
+    async def _watch(self):
+        while not self._queue[-1].done():
+            future = self._queue[-1]
+            value = await future
+            self._queue.remove(future)
+            self.callback(value)
+
+
+class ObserverIterator(Observer):
+    """A simple observer that calls a callback each time a new value gets added to a gully. The callback can be either a
+    function or a coroutine."""
+
+    def __init__(self, *, loop=None):
+        super().__init__(None, loop=loop)
+
+    def stop(self):
+        self._queue[-1].set_exception(StopAsyncIteration)
+        super().stop()
+
+    async def __anext__(self):
+        value = await self._queue[-1]
+        return value
+
+    async def _watch(self):
+        return
