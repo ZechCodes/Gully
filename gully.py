@@ -167,27 +167,30 @@ class Observer:
     function or a coroutine."""
 
     def __init__(self, callback: Callback, *, loop=None):
-        self._queue = [asyncio.Future()]
-        self.callback = callback
+        self._current = asyncio.Future()
+        self._queue = []
+        self._callback = callback
         (loop if loop else asyncio.get_event_loop()).create_task(self._watch())
 
     @property
     def done(self) -> bool:
-        return self._queue[-1].done()
+        return self._current.done()
 
     def stop(self):
-        self._queue[-1].cancel()
+        self._current.cancel()
 
     def push(self, value):
+        if self.done:
+            return
+
         self._queue.append(asyncio.Future())
-        self._queue[-2].set_result(value)
+        self._current.set_result(value)
+        self._current = self._queue.pop(0)
 
     async def _watch(self):
-        while not self._queue[-1].done():
-            future = self._queue[-1]
-            value = await future
-            self._queue.remove(future)
-            self.callback(value)
+        while not self.done:
+            value = await self._current
+            self._callback(value)
 
 
 class ObserverIterator(Observer):
@@ -198,12 +201,10 @@ class ObserverIterator(Observer):
         super().__init__(None, loop=loop)
 
     def stop(self):
-        self._queue[-1].set_exception(StopAsyncIteration)
-        super().stop()
+        self._current.set_exception(StopAsyncIteration)
 
     async def __anext__(self):
-        value = await self._queue[-1]
-        return value
+        return await self._current
 
     async def _watch(self):
         return
