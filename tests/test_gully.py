@@ -2,119 +2,194 @@ import asyncio
 import gully
 
 
-def test_stream_on_next():
-    got_value = None
-
-    def watch(value):
-        nonlocal got_value
-        got_value = value
-
-    async def push(stream):
-        stream.push(5)
-
-    async def run():
-        stream = gully.Gully()
-        stream.watch(watch)
-        await asyncio.sleep(0.1)
-        await push(stream)
-        stream.stop()
-
-    loop = asyncio.new_event_loop()
-    loop.run_until_complete(run())
-
-    assert got_value == 5
+NoOp = type("NoOp", tuple(), {"__await__": lambda self: (None for _ in range(1))})()
 
 
-def test_stream_async_for():
-    got_value = []
+def test_watcher():
+    found = []
 
-    async def watch(stream):
-        async for value in stream:
-            got_value.append(value)
-            if len(got_value) == 5:
-                break
+    async def watch(item):
+        found.append(item)
 
-    async def push(stream):
-        for i in range(5):
-            await asyncio.sleep(0.1)
-            stream.push(5)
+    async def test():
+        g = gully.Gully()
+        g.watch(watch)
+        await g.push("testing")
+        await g.push("foobar")
 
-    async def run():
-        stream = gully.Gully()
-        await asyncio.gather(push(stream), watch(stream))
-
-    loop = asyncio.new_event_loop()
-    loop.run_until_complete(run())
-
-    assert got_value == [5, 5, 5, 5, 5]
+    asyncio.run(test())
+    assert found == ["testing", "foobar"]
 
 
-def test_stream_limit():
-    got_value = []
+def test_watcher_massive_data():
+    c = 0
 
-    async def watch(stream):
-        async for value in stream.limit(5):
-            got_value.append(value)
+    async def watch(item):
+        nonlocal c
+        c += 1
 
-    async def push(stream):
-        for i in range(6):
-            await asyncio.sleep(0.1)
-            stream.push(5)
+    async def test():
+        g = gully.Gully()
+        g.watch(watch)
+        for i in range(100_000):
+            await g.push(i)
 
-    async def run():
-        stream = gully.Gully()
-        await asyncio.gather(push(stream), watch(stream))
-
-    loop = asyncio.new_event_loop()
-    loop.run_until_complete(run())
-
-    assert got_value == [5, 5, 5, 5, 5]
+    asyncio.run(test())
+    assert c == 100_000
 
 
-def test_stream_filter():
-    got_value = []
+def test_lots_of_watchers():
+    c = 0
 
-    async def watch(stream):
-        async for value in stream.filter(lambda v: v % 2 == 0):
-            got_value.append(value)
+    async def test():
+        g = gully.Gully()
+        for _ in range(100_000):
 
-    async def push(stream):
-        for i in range(6):
-            await asyncio.sleep(0.1)
-            stream.push(i)
-        await asyncio.sleep(0.1)
+            async def watch(item):
+                nonlocal c
+                c += 1
 
-        stream.stop()
+            g.watch(watch)
 
-    async def run():
-        stream = gully.Gully()
-        await asyncio.gather(watch(stream), push(stream))
+        await g.push(1)
 
-    loop = asyncio.new_event_loop()
-    loop.run_until_complete(run())
-
-    assert got_value == [0, 2, 4]
+    asyncio.run(test())
+    assert c == 100_000
 
 
-def test_stream_map():
-    got_value = []
+def test_observer_stop():
+    c = 0
 
-    async def watch(stream):
-        async for value in stream.map(lambda v: v * 5):
-            got_value.append(value)
+    async def watch(item):
+        nonlocal c
+        c += 1
 
-    async def push(stream):
-        for i in range(1000):
-            await asyncio.sleep(0.001)
-            stream.push(1)
+    async def test():
+        g = gully.Gully()
+        observer = g.watch(watch)
+        await g.push(1)
+        observer.disable()
+        await g.push(2)
 
-        stream.stop()
+    asyncio.run(test())
+    assert c == 1
 
-    async def run():
-        stream = gully.Gully()
-        await asyncio.gather(push(stream), watch(stream))
 
-    loop = asyncio.new_event_loop()
-    loop.run_until_complete(run())
+def test_observer_restart():
+    c = 0
 
-    assert got_value == [5] * 1000
+    async def watch(item):
+        nonlocal c
+        c += 1
+
+    async def test():
+        g = gully.Gully()
+        observer = g.watch(watch)
+        await g.push(1)
+        observer.disable()
+        await g.push(2)
+        observer.enable()
+        await g.push(3)
+
+    asyncio.run(test())
+    assert c == 2
+
+
+def test_sub_gully():
+    c = 0
+
+    async def watch(item):
+        nonlocal c
+        c += 1
+
+    async def test():
+        g1 = gully.Gully()
+        g2 = gully.Gully(g1)
+        g2.watch(watch)
+        await g1.push(1)
+        await NoOp
+
+    asyncio.run(test())
+    assert c == 1
+
+
+def test_filters():
+    async def test():
+        g = gully.Gully()
+
+        g.add_filters(lambda item: item % 2 == 0)
+
+        for i in range(1, 4):
+            await g.push(i)
+
+        return g.history
+
+    x = asyncio.run(test())
+    assert x == [2]
+
+
+def test_filters_multiple():
+    async def test():
+        g = gully.Gully()
+
+        g.add_filters(lambda item: item % 3 == 0, lambda item: item % 5 == 0)
+
+        for i in range(1, 16):
+            await g.push(i)
+
+        return g.history
+
+    x = asyncio.run(test())
+    assert x == [15]
+
+
+def test_map():
+    async def test():
+        g = gully.Gully()
+
+        g.add_mappings(lambda item: item % 2 == 0)
+
+        for i in range(1, 4):
+            await g.push(i)
+
+        return g.history
+
+    x = asyncio.run(test())
+    assert x == [False, True, False]
+
+
+def test_map_multiple():
+    async def test():
+        g = gully.Gully()
+
+        g.add_mappings(
+            lambda item: item % 2 == 0, lambda item: "Even" if item else "Odd"
+        )
+
+        for i in range(1, 4):
+            await g.push(i)
+
+        return g.history
+
+    x = asyncio.run(test())
+    assert x == ["Odd", "Even", "Odd"]
+
+
+def test_map_and_filter():
+    async def test():
+        g1 = gully.Gully(filters=[lambda item: item % 3 == 0])
+        g2 = g1.map(
+            lambda item: item % 2 == 0,
+            lambda item: "Even" if item else "Odd",
+        )
+
+        for i in range(1, 10):
+            await g1.push(i)
+
+        await NoOp
+
+        return g1.history, g2.history
+
+    x, y = asyncio.run(test())
+    assert x == [9, 6, 3]
+    assert y == ["Odd", "Even", "Odd"]

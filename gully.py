@@ -2,215 +2,208 @@
 
 The goal of Gully is to provide simple data streams that can be observed and manipulated without much fuss.
 
-To use just create an instance of Gully and push data into the data stream using its `push` method. A gully stream can
-be filtered by passing a single argument predicate function to the `filter` method, this will return a `FilteredGully`
-which can be used just like a normal gully. It is also possible to map the values as they come into the gully by passing
-a single argument mapping function to the `map` method which will return a `MappedGully`. Finally it is possible to
-limit the number of items a gully will return by either setting the `limit` arg at instantiation or by calling the
-`limit` method with the upper limit, it'll return a `Gully` object."""
+You can push values into a gully and it'll pass that value down to any observers. It'll also store the value in the
+gully's history. The values pushed into the gully can be filtered and mapped. Filter and mapping functions should take a
+single value argument. Filter functions should return True to keep the value or False to have it removed. Mapping
+functions return the new mapped value or the value if it wasn't changed. Filter and map functions will be added to a
+pipeline that will execute the functions in the order that they were added. Maps and filters can be added when creating
+the gully instance or later on by using the add_filters and add_mappings methods.
+
+It's also possible to branch a gully by using it's map and filter methods. This will create a new gully instance that
+captures anything pushed into the original gully.
+
+The gully watch method returns an observer that can be used to control if the observer should continue watching. Using
+the return observer object it is possible start and stop watching any number of times."""
 from __future__ import annotations
 
 import asyncio
-from asyncio import Future
+from collections import deque, UserList
+from functools import partial
 from inspect import isawaitable
-from typing import Any, Awaitable, Callable, Union
+from typing import Any, Awaitable, Callable, Optional, Sequence, Union
 
 
-Callback = Union[Awaitable, Callable]
+Callback = Callable[[Any], Awaitable[Any]]
+
+
+class NotAFilterMatch(Exception):
+    ...
 
 
 class Gully:
-    """Gully is a data stream. It can observe other data streams and it can be observed by either data streams or
-    functions.
+    """The core gully object. It tracks the push history using a deque that inserts the newest push at the 0 index. It
+    makes the history viewable as a read only HistoryView object.
 
-    It optionally takes a Gully object which it will observe. It also takes a limit, if it is positive the gully will
-    only return that many values, if it is negative the gully will run so long as it is being passed values.
+    Parameters
+    watching: An optional sequence of gullies that this gully should aggregate. Passing a non-sequence that is an
+              instance of Gully is also allowed.
+    filters: This should be a sequence of coroutines that take a single value argument and return a bool.
+    mappings: This should be a sequences of coroutines that take a single value argument and return the new value to use
+              in its place, or the original value if it is unchanged.
+    max_size: The maximum size of the push history. Values less than 1 will cause the history to be unlimited.
+    loop: The asyncio event loop that the gully should use for calling observers."""
 
-    All gully instances act as async iterators. So they can be used in an async for to observe future values that get
-    pushed into the gully. When the gully stops it will end the iterator stopping the async for."""
+    __slots__ = ("_history", "_loop", "_pipeline", "_observers")
 
-    def __init__(self, limit: int = -1):
-        self._next = Future()
-        self._limit = limit
+    def __init__(
+        self,
+        watching: Union[Gully, Sequence[Gully]] = tuple(),
+        *,
+        filters: Sequence[Callback] = tuple(),
+        mappings: Sequence[Callback] = tuple(),
+        max_size: int = -1,
+        loop: Optional[asyncio.AbstractEventLoop] = None
+    ):
+        self._history = deque(maxlen=max_size > 0 and max_size or None)
+        self._loop = loop or asyncio.get_running_loop()
+        self._pipeline = Pipeline()
         self._observers = set()
 
-    @property
-    def done(self) -> bool:
-        """Will be true if the gully has reached its limit."""
-        return self._next.done()
+        self.add_filters(*filters)
+        self.add_mappings(*mappings)
+
+        for gully in [watching] if isinstance(watching, Gully) else watching:
+            gully.watch(self.push)
 
     @property
-    def next(self) -> FutureView:
-        """A future for the next value that will be pushed into the gully. This future will resolve to the next value.
-        It is a `FutureView` so cannot be modified or cancelled."""
-        return FutureView(self._next)
+    def loop(self) -> asyncio.AbstractEventLoop:
+        """The event loop that the gully should use for calling observers."""
+        return self._loop
 
-    def filter(self, predicate: Callable, limit: int = -1) -> FilteredGully:
-        """Creates a filtered gully for all values passed into the gully."""
-        f = FilteredGully(predicate, limit)
-        self._watch(f)
-        return f
+    @property
+    def history(self) -> HistoryView:
+        """The most recent push history sorted most recent to least recent. This uses a HistoryView to protect against
+        modifications to the history list."""
+        return HistoryView(self._history)
 
-    def limit(self, limit: int) -> Gully:
-        """Creates a gully that is limited to `limit` values."""
-        l = Gully(limit)
-        self._watch(l)
-        return l
+    @property
+    def pipeline(self) -> Pipeline:
+        """The gully's pipeline object. This allows lower level control of the pipeline if needed. Push will only ever
+        call the pipeline's run method with 1 argument, so anything added to the pipeline must support only receiving a
+        single argument."""
+        return self._pipeline
 
-    def map(self, mapping: Callable, limit: int = -1):
-        """Creates a mapped gully that maps all values passed into the gully."""
-        m = MappedGully(mapping, limit)
-        self._watch(m)
-        return m
-
-    def push(self, value: Any):
-        """Pushes a value into the gully. If the gully is done/stopped nothing will happen."""
-        if self.done:
+    async def push(self, item: Any):
+        """Pushes an item into the gully history. The item will be passed through the filter and mapping pipeline and
+        the final result will be added to the history and will be sent to all observers."""
+        try:
+            value = await self._pipeline.run(item)
+        except NotAFilterMatch:
             return
+        else:
+            self._history.appendleft(value)
+            for observer in self._observers:
+                self.loop.create_task(observer(value))
 
-        if self._limit > 0:
-            self._limit -= 1
+    def filter(self, *predicates: Callback, max_size: int = -1) -> Gully:
+        """Branches the gully into a new gully which uses the given filter predicates. The branched gully can have a
+        custom max_size set."""
+        return Gully(self, filters=predicates, max_size=max_size)
 
-        old, self._next = self._next, Future()
-        old.set_result(value)
-        self._push(value)
+    def map(self, *mappings: Callback, max_size: int = -1) -> Gully:
+        """Branches the gully into a new gully which uses the given mapping callbacks. The branched gully can have a
+        custom max_size set."""
+        return Gully(self, mappings=mappings, max_size=max_size)
 
-        if self._limit == 0:
-            self.stop()
+    def add_filters(self, *predicates: Callback):
+        """Adds the given filter predicates to the gully pipeline. These cannot be removed, use the filter method to
+        create a new gully that has the desired filter predicates if they need to be disabled later.
 
-    def stop(self):
-        """Stops the gully by cancelling the next value's future."""
-        self._next.cancel()
-        for observer in self._observers:
-            observer.stop()
+        This wraps each filter predicate in a function that will raise NotAFilterMatch if the filter predicate returns
+        False. This will cause the pipeline to stop and push will ignore the current item, not adding it to the history
+        and not calling the observers."""
+
+        def filter_wrapper(predicate, item):
+            if not predicate(item):
+                raise NotAFilterMatch()
+            return item
+
+        self._pipeline.add(
+            *(partial(filter_wrapper, predicate) for predicate in predicates)
+        )
+
+    def add_mappings(self, *mappings: Callback):
+        """Adds the given mapping callbacks to the gully pipeline. These cannot be removed, use the map method to create
+        a new gully that has the desired mapping callbacks if they need to be disabled later."""
+        self._pipeline.add(*mappings)
 
     def watch(self, callback: Callback) -> Observer:
-        """Adds a callback (either a callable or coroutine) that will be run everytime a value is pushed into the gully."""
-        observer = Observer(callback)
-        self._watch(observer)
+        """Adds an observer callback to the gully. When new values are successfully pushed into the gully the observer
+        will be called with the new value."""
+        observer = callback
+        if not isinstance(callback, Observer):
+            observer = Observer(
+                callback,
+                partial(self._observers.add, callback),
+                partial(self._observers.remove, callback),
+            )
+        observer.enable()
         return observer
 
-    def _watch(self, observer: Union[Observer, Gully]):
-        self._observers.add(observer)
-
-    def _push(self, value: Any):
-        for observer in self._observers.copy():
-            if observer.done:
-                self._observers.remove(observer)
-            else:
-                observer.push(value)
-
-    def __aiter__(self):
-        observer = ObserverIterator()
-        self._observers.add(observer)
-        return observer
+    def stop_watching(self, callback: Union[Callback, Observer]):
+        """Removes an observer from the gully. This will accept either the original callback or an observer object that
+        wraps that callback."""
+        self._observers.remove(callback)
 
 
-class FilteredGully(Gully):
-    """A simple filterable gully. It expects a callable that takes a single argument and that returns a boolean. The
-    callable will be passed each value that's being pushed into the gully and if it returns `True` the value will be
-    allowed, if it returns `False` the value will not be pushed and will be ignored."""
+class HistoryView(UserList):
+    """A readonly view for lists."""
 
-    def __init__(
-        self,
-        predicate: Callable[[Any], bool],
-        limit: int = 0,
-    ):
-        super().__init__(limit)
-        self._predicate = predicate
-
-    def push(self, value: Any):
-        """Pushes a value into the gully only if the predicate returns `True` for the value."""
-        if self._predicate(value):
-            super().push(value)
-
-
-class MappedGully(Gully):
-    """A simple mapping gully. It expects a callable that takes a single argument and that any value. The callable will
-    be passed each value that's being pushed into the gully and the value the callable returns will be what gets pushed.
-    """
-
-    def __init__(
-        self,
-        mapping: Callable[[Any], Any],
-        limit: int = 0,
-    ):
-        super().__init__(limit)
-        self._mapping = mapping
-
-    def push(self, value: Any):
-        """Pushes a value into the gully that has been mapped by the mapping callable."""
-        super().push(self._mapping(value))
-
-
-class FutureView:
-    """A view into a future. This prevents setting exceptions and results as well as cancelling the future being viewed."""
-
-    def __init__(self, future: Future):
-        self.__future = future
-
-    def cancel(self, *args) -> bool:
-        raise PermissionError()
-
-    def set_exception(self, *args) -> None:
-        raise PermissionError()
-
-    def set_result(self, *args) -> None:
-        raise PermissionError()
-
-    def __getattr__(self, item: str):
-        if not item.startswith("_"):
-            return getattr(self.__future, item)
+    def __setitem__(self, key, value):
+        raise TypeError(
+            "'{type(self).__name__}' object does not support item assignment"
+        )
 
 
 class Observer:
-    """A simple observer that calls a callback each time a new value gets added to a gully. The callback can be either a
-    function or a coroutine."""
+    """Simple wrapper for callback coroutines. This allows the observer to be enabled or disabled the observer. The
+    observer must be provided a start function that enables the callback to observer new events and a stop function that
+    disables it.
 
-    def __init__(self, callback: Callback, *, loop=None):
-        self._queue = [asyncio.Future()]
+    This can be used as a stand-in for the callback in sets/dictionaries keys or when stopping a watcher on a gully
+    object."""
+
+    __slots__ = ("_callback", "_start", "_stop")
+
+    def __init__(self, callback, start, stop):
         self._callback = callback
-        (loop if loop else asyncio.get_event_loop()).create_task(self._watch())
+        self._start = start
+        self._stop = stop
 
-    @property
-    def done(self) -> bool:
-        return self._queue[0].cancelled()
+    def enable(self):
+        """Enables the observer by calling the start function it was provided."""
+        self._start()
 
-    def stop(self):
-        self._queue[0].cancel()
+    def disable(self):
+        """Disables the observer by calling the stop function it was provided."""
+        self._stop()
 
-    def push(self, value):
-        if self.done:
-            return
+    def __eq__(self, other):
+        return other == self._callback
 
-        top = self._queue[-1]
-        self._queue.append(asyncio.Future())
-        top.set_result(value)
-
-    async def _watch(self):
-        while not self.done:
-            bottom = self._queue[0]
-            value = await bottom
-            self._queue.remove(bottom)
-            result = self._callback(value)
-            if isawaitable(result):
-                await result
+    def __hash__(self):
+        return hash(self._callback)
 
 
-class ObserverIterator(Observer):
-    """A simple observer that calls a callback each time a new value gets added to a gully. The callback can be either a
-    function or a coroutine."""
+class Pipeline:
+    """A simple action pipeline that allows steps to be run in order."""
 
-    def __init__(self, *, loop=None):
-        super().__init__(None, loop=loop)
+    def __init__(self):
+        self._steps = []
 
-    def stop(self):
-        self._queue[0].set_exception(StopAsyncIteration)
+    def __call__(self, *args, **kwargs) -> Awaitable[Any]:
+        """Calls the pipeline's run method. It must be awaited."""
+        return self.run(*args, **kwargs)
 
-    async def __anext__(self):
-        if self.done:
-            raise StopAsyncIteration()
-        return await self._queue[0]
+    def add(self, *steps):
+        """Adds any number of steps to the pipeline."""
+        self._steps.extend(steps)
 
-    async def _watch(self):
-        return
+    async def run(self, item: Any, *args, **kwargs) -> Any:
+        """Runs the pipeline. It will replace the first argument passed with the return from prior steps."""
+        value = item
+        for step in self._steps:
+            value = step(value, *args, **kwargs)
+            if isawaitable(value):
+                value = await value
+        return value
