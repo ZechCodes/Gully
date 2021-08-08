@@ -9,65 +9,84 @@ pip install gully
 
 ## Usage
 ```python
+import asyncio
 import gully
 
-async def monitor_stream_using_iterator(stream: gully.Gully):
-    async for item in stream:
-        print(item)
-
-async def monitor_stream_using_future(stream: gully.Gully):
-    while not stream.done:
-        item = await stream.next
-        print(item)
-
-async def monitor_stream_observer(stream: gully.Gully):
-    def observer(item):
-        print(item)
-        
+async def observer(item):
+    print(item)
+    
+async def main():
+    stream = gully.Gully()
     stream.watch(observer)
+    stream.add_filter(lambda item: item == "foobar")
+    stream.add_mapping(lambda item: item.upper())
+    await stream.push("foobar")
+    await stream.push("baz")
+    await stream.push("foobar")
 
-data_stream = gully.Gully()
-filtered = data_stream.filter(lambda item: item == "foobar")
-mapped = filtered.map(lambda item: item.upper())
+asyncio.run(main())
+```
+*Output*
+```
+FOOBAR
+FOOBAR
 ```
 ## Documentation
 
-### gully.Gully(stream: Gully = None, limit: int = -1)
+### gully.Gully(watch: Sequence[Gully] = None, *, filters: Sequence[Callable], mappings: Sequence[Callable], max_size: int = -1, loop: EventLoop = None)
 
-Gully is a data stream. It can observe other data streams and it can be observed by either data streams or functions.
+Gully is a stream. It can observe other gullies, and it can be observed by coroutines. Any number of gullies can be passed as args, the new gully will observe them to aggregate their pushes. By default gullies will retain an unlimited history of their pushes, this can be changed by setting the `max_size` keyword arg to any value greater than 0. 
 
-It optionally takes a Gully object which it will observe. It also takes a limit, if it is positive the gully will only return that many values, if it is negative the gully will run so long as it is being passed values.
+- `property Gully.loop: asyncio.AbstractEventLoop` This is the loop that the gully will use to run observers.
 
-All gully instances act as async iterators. So they can be used in an async for to observe future values that get pushed into the gully. When the gully stops it will end the iterator stopping the async for.
+- `property Gully.history: gully.HistoryView` The current history of pushes to the gully. This is a view that cannot be set to. It is restricted by the `max_size` setting that was given to the gully.
 
-- `property Gully.done: bool` Is the gully done, either because it reached its limit or was stopped
-
-- `property Gully.next: gully.FutureView` The future that will receive the next value that is pushed into the data stream. This future will change with every pushed value, it will be cancelled if the stream is stopped or reaches its limit. It is a `FutureView` to prevent alterations to the underlying future. 
+- `property Gully.pipeline: gully.Pipeline` The pipeline that is run when pushing a new item into the gully. The gully will only ever call the pipeline with a single argument, so all steps added to the pipeline must support only receiving a single argument.
 
 **`method Gully.push(value: Any)`**
 
-Pushes a value into the data stream.
+Pushes a value into the gully. This will run the pipeline to map and filter the value. It will only add it to the history and call the observers if a filter doesn't reject the value.
 
-**`method DataStream.stop()`**
+**`method Gully.watch(callback: Callable[[Any], Awaitable[None]])`**
 
-Stops the stream and cancels the next future stopping all watchers.
+Registers a coroutine to observe new values that are pushed into the gully.
 
-**`method Gully.watch(callback: Callable[[Any], None])`**
+**`method Gully.filter(*predicates: Callable[[Any], bool], max_size: int = -1) -> Gully`**
 
-Registers a function to be called whenever a new value is pushed into the stream. The function may also be a coroutine.
+Branches the gully into a new gully which uses the given filter predicates. The branched gully can have a custom `max_size` set.
 
-**`method Gully.filter(predicate: Callable[[Any], bool], limit: int = -1) -> FilteredGully`**
+**`method Gully.map(mapping: Callable[[Any], Any], max_size: int = -1) -> Gully`**
 
-Creates a gully that only pushes values that the predicate function allows. The predicate function should return `True` for any value that should be allowed into the stream.
+Branches the gully into a new gully which uses the given mapping callbacks. The branched gully can have a custom `max_size` set.
 
-**`method Gully.map(mapping: Callable[[Any], Any], limit: int = -1) -> MappedGully`**
+**`method Gully.add_filter(*predicates: Callable[[Any], Any])`**
 
-Creates a gully that passes every value pushed to the stream into the mapping function, the returned value will be pushed into the gully.
+Adds the given filter predicates to the gully pipeline. These cannot be removed, use the filter method to create a new gully that has the desired filter predicates if they need to be disabled later.
 
-### gully.FilteredGully(gully.Gully)
+This wraps each filter predicate in a function that will raise `NotAFilterMatch` if the filter predicate returns `False`. This will cause the pipeline to stop and push will ignore the current item, not adding it to the history and not calling the observers.
 
-A simple filterable gully that inherits from `Gully`. It expects a callable that takes a single argument and that returns a boolean. The callable will be passed each value that's being pushed into the gully and if it returns `True` the value will be allowed, if it returns `False` the value will not be pushed and will be ignored.
+**`method Gully.add_mapping(*mappings: Callable[[Any], Any])`**
 
-### gully.MappedGully
+Adds the given mapping callbacks to the gully pipeline. These cannot be removed, use the map method to create a new gully that has the desired mapping callbacks if they need to be disabled later.
 
-A simple mapping gully that inherits from `Gully`. It expects a callable that takes a single argument and that any value. The callable will be passed each value that's being pushed into the gully and the value the callable returns will be what gets pushed.
+**`method Gully.stop_watching(callback: Union[Callable, Observer])`**
+
+Removes an observer from the gully. This will accept either the original callback, or an observer object that wraps that callback.
+
+### gully.Observable(gully.Gully)
+
+Simple wrapper for callback coroutines. This allows the observer to be enabled or disabled. The observer must be provided a start function that enables the callback to observer new events, and a stop function that disables it.
+
+This can be used as a stand-in for the callback in sets/dictionaries keys or when stopping a watcher on a gully object.
+
+### gully.Pipeline
+
+A simple action pipeline that allows steps to be run in order.
+
+**`method Pipeline.add(*steps: Callable[[Any], Any])`**
+
+Adds any number of steps to the pipeline.
+
+**`method Pipeline.run(item: Any, *args, **kwargs)`**
+
+Runs the pipeline. It will replace the first argument passed with the return from prior steps.

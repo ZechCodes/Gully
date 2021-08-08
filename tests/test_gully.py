@@ -117,7 +117,7 @@ def test_filters():
     async def test():
         g = gully.Gully()
 
-        g.add_filters(lambda item: item % 2 == 0)
+        g.add_filter(lambda item: item % 2 == 0)
 
         for i in range(1, 4):
             await g.push(i)
@@ -132,7 +132,7 @@ def test_filters_multiple():
     async def test():
         g = gully.Gully()
 
-        g.add_filters(lambda item: item % 3 == 0, lambda item: item % 5 == 0)
+        g.add_filter(lambda item: item % 3 == 0, lambda item: item % 5 == 0)
 
         for i in range(1, 16):
             await g.push(i)
@@ -147,7 +147,7 @@ def test_map():
     async def test():
         g = gully.Gully()
 
-        g.add_mappings(lambda item: item % 2 == 0)
+        g.add_mapping(lambda item: item % 2 == 0)
 
         for i in range(1, 4):
             await g.push(i)
@@ -162,7 +162,7 @@ def test_map_multiple():
     async def test():
         g = gully.Gully()
 
-        g.add_mappings(
+        g.add_mapping(
             lambda item: item % 2 == 0, lambda item: "Even" if item else "Odd"
         )
 

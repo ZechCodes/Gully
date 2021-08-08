@@ -35,8 +35,7 @@ class Gully:
     makes the history viewable as a read only HistoryView object.
 
     Parameters
-    watching: An optional sequence of gullies that this gully should aggregate. Passing a non-sequence that is an
-              instance of Gully is also allowed.
+    *watching: One or more gullies that this gully should aggregate.
     filters: This should be a sequence of coroutines that take a single value argument and return a bool.
     mappings: This should be a sequences of coroutines that take a single value argument and return the new value to use
               in its place, or the original value if it is unchanged.
@@ -47,10 +46,9 @@ class Gully:
 
     def __init__(
         self,
-        watching: Union[Gully, Sequence[Gully]] = tuple(),
-        *,
-        filters: Sequence[Callback] = tuple(),
-        mappings: Sequence[Callback] = tuple(),
+        *watching: Gully,
+        filters: Sequence[Union[Callback, Callable[[Any], Any]]] = tuple(),
+        mappings: Sequence[Union[Callback, Callable[[Any], Any]]] = tuple(),
         max_size: int = -1,
         loop: Optional[asyncio.AbstractEventLoop] = None
     ):
@@ -59,10 +57,10 @@ class Gully:
         self._pipeline = Pipeline()
         self._observers = set()
 
-        self.add_filters(*filters)
-        self.add_mappings(*mappings)
+        self.add_filter(*filters)
+        self.add_mapping(*mappings)
 
-        for gully in [watching] if isinstance(watching, Gully) else watching:
+        for gully in watching:
             gully.watch(self.push)
 
     @property
@@ -95,17 +93,21 @@ class Gully:
             for observer in self._observers:
                 self.loop.create_task(observer(value))
 
-    def filter(self, *predicates: Callback, max_size: int = -1) -> Gully:
+    def filter(
+        self, *predicates: Union[Callback, Callable[[Any], Any]], max_size: int = -1
+    ) -> Gully:
         """Branches the gully into a new gully which uses the given filter predicates. The branched gully can have a
         custom max_size set."""
         return Gully(self, filters=predicates, max_size=max_size)
 
-    def map(self, *mappings: Callback, max_size: int = -1) -> Gully:
+    def map(
+        self, *mappings: Union[Callback, Callable[[Any], Any]], max_size: int = -1
+    ) -> Gully:
         """Branches the gully into a new gully which uses the given mapping callbacks. The branched gully can have a
         custom max_size set."""
         return Gully(self, mappings=mappings, max_size=max_size)
 
-    def add_filters(self, *predicates: Callback):
+    def add_filter(self, *predicates: Union[Callback, Callable[[Any], Any]]):
         """Adds the given filter predicates to the gully pipeline. These cannot be removed, use the filter method to
         create a new gully that has the desired filter predicates if they need to be disabled later.
 
@@ -122,7 +124,7 @@ class Gully:
             *(partial(filter_wrapper, predicate) for predicate in predicates)
         )
 
-    def add_mappings(self, *mappings: Callback):
+    def add_mapping(self, *mappings: Union[Callback, Callable[[Any], Any]]):
         """Adds the given mapping callbacks to the gully pipeline. These cannot be removed, use the map method to create
         a new gully that has the desired mapping callbacks if they need to be disabled later."""
         self._pipeline.add(*mappings)
