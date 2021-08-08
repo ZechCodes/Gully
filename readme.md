@@ -1,5 +1,8 @@
 # Gully
 
+[![PyPI version](https://img.shields.io/pypi/v/gully?color=informational&style=flat-square)](https://pypi.python.org/pypi/gully/)
+[![PyPI license](https://img.shields.io/pypi/l/gully?style=flat-square&color=orange)](https://lbesson.mit-license.org/)
+
 Gully is a simple framework for manipulating asynchronous streams of data.
 
 ## Installation
